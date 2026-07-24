@@ -7,7 +7,6 @@ const { getMissingKeywords } = require('./suggestions');
 function scoreResume(resumeText, jdText) {
     const resumeTokens = normalizeText(resumeText);
     
-    // Use the new regex-based section extractor instead of normalizing the whole JD
     const jdTokens = Array.from(new Set(extractJDSkills(jdText)));
 
     if (jdTokens.length === 0) {

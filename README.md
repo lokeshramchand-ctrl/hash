@@ -677,8 +677,3 @@ The project follows a modular architecture.
 
 Each module performs a single responsibility, allowing future replacement or extension without affecting the overall pipeline.
 
----
-
-# License
-
-This project is intended for educational, research, and portfolio purposes.

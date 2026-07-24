@@ -13,7 +13,6 @@ const STOP_WORDS = new Set([
     "where", "why", "how", "all", "any", "both", "each", "few", "more", "most", "other",
     "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too",
     "very", "can", "will", "just", "don", "should", "now", "ll", "e.g",
-    // JD specific conversational noise
     "bonus", "help", "grow", "explored", "coursework", "self", "learning", "signal",
     "none", "following", "dealbreakers", "haven", "covered", "yet", "exposure", "conceptual",
     "awareness", "welcome", "expected", "assist", "generating", "cases", "review",
@@ -21,12 +20,7 @@ const STOP_WORDS = new Set([
     "work", "ships", "knowledge", "interest", "projects", "tools", "using", "code", "development", "habit", "signal", "yet", "powered",
     "strength", "strengths", "suggestions", "missing"
 ]);
-const KNOWN_SKILLS = [
-    "html", "css", "javascript", "typescript", "react", "next.js",
-    "node.js", "express", "postgresql", "sql", "testing", "jest",
-    "playwright", "rag", "embeddings", "vector search", "langchain",
-    "python", "docker", "aws", "git"
-];
+
 function extractJDSkills(jdText) {
     if (!jdText) return [];
 
