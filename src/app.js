@@ -53,7 +53,7 @@ app.message(async ({ message, say }) => {
 
             const buffer = await response.arrayBuffer();
             const filePath = path.join(uploadsDir, file.name);
-            
+
             fs.writeFileSync(filePath, Buffer.from(buffer));
 
             const text = await parseFileText(filePath);
@@ -108,26 +108,48 @@ app.message(async ({ message, say }) => {
             }
         ];
 
-rankedCandidates.forEach((candidate, index) => {
-            const maxItems = 10; // Limit to prevent Slack 3000 character error
-
-            const matchedSkills = candidate.matched.length > 0 
-                ? candidate.matched.slice(0, maxItems).map(s => `- ${s}`).join("\n") + 
-                  (candidate.matched.length > maxItems ? `\n- ...and ${candidate.matched.length - maxItems} more` : "")
-                : "None matched";
-            
-            const improvementSuggestions = candidate.missing.length > 0 
-                ? candidate.missing.slice(0, maxItems).map(s => `• ${s}`).join("\n") + 
-                  (candidate.missing.length > maxItems ? `\n• ...and ${candidate.missing.length - maxItems} more` : "")
-                : "No suggestions";
-
+        rankedCandidates.forEach((candidate, index) => {
+            // 1. Add Candidate Header and Score
             blocks.push({
                 type: "section",
                 text: {
                     type: "mrkdwn",
-                    text: `*${index + 1}. ${candidate.filename}*\n*Score:* ${candidate.score}%\n\n*Strengths:*\n${matchedSkills}\n\n*Suggestions:*\n${improvementSuggestions}`
+                    text: `*${index + 1}. ${candidate.filename}*\n*Score:* ${candidate.score}%`
                 }
             });
+
+            // 2. Build Strengths string
+            const matchedSkills = candidate.matched.length > 0
+                ? "*Strengths:*\n" + candidate.matched.map(s => `- ${s}`).join("\n")
+                : "*Strengths:*\nNone matched";
+
+            // 3. Build Suggestions string
+            // 3. Build Suggestions string
+            const improvementSuggestions = candidate.missing.length > 0
+                ? "*Suggestions:*\n" + candidate.missing.map(s => `• ${s}`).join("\n")
+                : "*Suggestions:*\nNo suggestions";
+            // 4. Helper function to chunk text into separate blocks if it approaches 3000 characters
+            const pushTextInChunks = (fullText) => {
+                const lines = fullText.split('\n');
+                let currentChunk = "";
+
+                for (const line of lines) {
+                    if (currentChunk.length + line.length > 2900) {
+                        blocks.push({ type: "section", text: { type: "mrkdwn", text: currentChunk } });
+                        currentChunk = line;
+                    } else {
+                        currentChunk += (currentChunk === "" ? "" : "\n") + line;
+                    }
+                }
+
+                if (currentChunk) {
+                    blocks.push({ type: "section", text: { type: "mrkdwn", text: currentChunk } });
+                }
+            };
+
+            // Push Strengths and Suggestions safely
+            pushTextInChunks(matchedSkills);
+            pushTextInChunks(improvementSuggestions);
 
             blocks.push({
                 type: "divider"
