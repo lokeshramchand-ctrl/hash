@@ -22,15 +22,28 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir);
 }
 
+// Helper function to extract text based on extension
+async function parseFileText(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.pdf') {
+        return await extractPdfText(filePath);
+    } else if (ext === '.docx') {
+        return await extractDocxText(filePath);
+    } else if (ext === '.txt') {
+        return fs.readFileSync(filePath, 'utf8');
+    }
+    return '';
+}
+
 app.message(async ({ message, say }) => {
     if (!message.files || message.files.length === 0) return;
 
     await say(`Received ${message.files.length} file(s). Downloading and processing...`);
 
     try {
-        const filePaths = [];
+        const parsedFiles = [];
 
-        // Phase 1: Download files
+        // Phase 1 & 2: Download and Extract Text
         for (const file of message.files) {
             const response = await fetch(file.url_private_download, {
                 headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
@@ -42,30 +55,28 @@ app.message(async ({ message, say }) => {
             const filePath = path.join(uploadsDir, file.name);
             
             fs.writeFileSync(filePath, Buffer.from(buffer));
-            filePaths.push(filePath);
+
+            const text = await parseFileText(filePath);
+            parsedFiles.push({ filename: file.name, text });
         }
 
-        let jdText = "";
-        const resumes = [];
+        // Identify JD vs Resumes
+        // A file is considered a JD if its name contains "jd" or "job", or if it is a .txt file
+        let jdFile = parsedFiles.find(f => {
+            const lowerName = f.filename.toLowerCase();
+            return lowerName.includes('jd') || lowerName.includes('job') || lowerName.endsWith('.txt');
+        });
 
-        // Phase 2: Extract Text
-        for (const filePath of filePaths) {
-            const ext = path.extname(filePath).toLowerCase();
-            const filename = path.basename(filePath);
-
-            if (ext === '.txt') {
-                jdText = fs.readFileSync(filePath, 'utf8');
-            } else if (ext === '.pdf') {
-                const text = await extractPdfText(filePath);
-                resumes.push({ filename, text });
-            } else if (ext === '.docx') {
-                const text = await extractDocxText(filePath);
-                resumes.push({ filename, text });
-            }
+        if (!jdFile) {
+            await say("No Job Description found. Please name your JD file with 'jd' or 'job' in the title (e.g., JD.pdf, Job_Description.docx) or upload it as a .txt file.");
+            return;
         }
 
-        if (!jdText) {
-            await say("No Job Description (.txt) found. Please upload a JD alongside the resumes.");
+        const jdText = jdFile.text;
+        const resumes = parsedFiles.filter(f => f.filename !== jdFile.filename);
+
+        if (resumes.length === 0) {
+            await say("Found Job Description, but no resume files were uploaded alongside it.");
             return;
         }
 
@@ -80,7 +91,7 @@ app.message(async ({ message, say }) => {
                     missing: result.missing
                 };
             })
-            .sort((a, b) => b.score - a.score); // Sorting highest to lowest
+            .sort((a, b) => b.score - a.score);
 
         // Phase 5 & 6: Generate Slack Block Kit Response
         const blocks = [
@@ -97,13 +108,17 @@ app.message(async ({ message, say }) => {
             }
         ];
 
-        rankedCandidates.forEach((candidate, index) => {
+rankedCandidates.forEach((candidate, index) => {
+            const maxItems = 10; // Limit to prevent Slack 3000 character error
+
             const matchedSkills = candidate.matched.length > 0 
-                ? candidate.matched.map(s => `- ${s}`).join("\n") 
+                ? candidate.matched.slice(0, maxItems).map(s => `- ${s}`).join("\n") + 
+                  (candidate.matched.length > maxItems ? `\n- ...and ${candidate.matched.length - maxItems} more` : "")
                 : "None matched";
             
             const improvementSuggestions = candidate.missing.length > 0 
-                ? candidate.missing.map(s => `• ${s}`).join("\n") 
+                ? candidate.missing.slice(0, maxItems).map(s => `• ${s}`).join("\n") + 
+                  (candidate.missing.length > maxItems ? `\n• ...and ${candidate.missing.length - maxItems} more` : "")
                 : "No suggestions";
 
             blocks.push({
@@ -119,9 +134,8 @@ app.message(async ({ message, say }) => {
             });
         });
 
-        // Send payload back to Slack
         await say({
-            text: "Resume Ranking Results", // Fallback text
+            text: "Resume Ranking Results",
             blocks: blocks
         });
 

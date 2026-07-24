@@ -1,13 +1,14 @@
-const { normalizeText } = require('../utils/tokenizer');
+// src/scoring/scoreResume.js
+
+const { normalizeText, extractJDSkills } = require('../utils/tokenizer');
 const { getMatchedKeywords } = require('./keywordMatcher');
 const { getMissingKeywords } = require('./suggestions');
 
 function scoreResume(resumeText, jdText) {
     const resumeTokens = normalizeText(resumeText);
     
-    // In a real scenario, you might have a predefined list of valid skills to extract from the JD.
-    // For this MVP, we treat every unique word in the JD as a keyword requirement.
-    const jdTokens = Array.from(new Set(normalizeText(jdText)));
+    // Use the new regex-based section extractor instead of normalizing the whole JD
+    const jdTokens = Array.from(new Set(extractJDSkills(jdText)));
 
     if (jdTokens.length === 0) {
         return { score: 0, matched: [], missing: [] };
