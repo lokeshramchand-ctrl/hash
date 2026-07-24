@@ -10,7 +10,6 @@ const {
     classifyDocumentWithOllama
 } = require('./scoring/ollamaScorer');
 
-// Initialize Slack Bolt App
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
     signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -18,16 +17,14 @@ const app = new App({
     appToken: process.env.SLACK_APP_TOKEN
 });
 
-// Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Channel state cache
+// Stores session state: { jds: [...], candidates: [...] }
 const channelCache = new Map();
 
-// Helper to parse file based on extension
 async function parseFileText(filePath) {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.pdf') {
@@ -40,33 +37,30 @@ async function parseFileText(filePath) {
     return '';
 }
 
-// Fallback helper to clean raw filenames if AI extraction fails
 function getDisplayName(filename) {
-    let name = filename.replace(/\.[^/.]+$/, ""); // Remove primary extension (.pdf)
-    name = name.replace(/\.pdf$/, "");            // Handle double extensions (.pdf.pdf)
-    name = name.replace(/^\d+[_]*/, "");          // Remove leading student ID/numbers
-    name = name.replace(/[_]/g, " ");             // Replace remaining underscores with spaces
+    let name = filename.replace(/\.[^/.]+$/, "");
+    name = name.replace(/\.pdf$/, "");
+    name = name.replace(/^\d+[_]*/, "");
+    name = name.replace(/[_]/g, " ");
     return name.trim();
 }
 
-// Main Slack Message Handler
 app.message(async ({ message, say }) => {
 
-    // 0. HANDLE RESET / CLEAR COMMANDS
+    // 0. RESET COMMAND
     if (message.text && message.text.trim().toLowerCase() === 'reset') {
         channelCache.delete(message.channel);
-        await say("Channel cache cleared. You can upload a new Job Description and Resumes.");
+        await say("Channel cache cleared. Upload new Job Descriptions and Resumes to start fresh.");
         return;
     }
 
-    // 1. HANDLE FILE UPLOADS (Resume Evaluation Phase)
+    // 1. FILE UPLOAD & MULTI-JD EVALUATION
     if (message.files && message.files.length > 0) {
-        await say(`Received ${message.files.length} file(s). Downloading and classifying documents with AI...`);
+        await say(`Received ${message.files.length} file(s). Downloading and classifying documents...`);
 
         const parsedFiles = [];
 
         try {
-            // Download and parse files
             for (const file of message.files) {
                 const response = await fetch(file.url_private_download, {
                     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
@@ -78,146 +72,134 @@ app.message(async ({ message, say }) => {
                 const filePath = path.join(uploadsDir, file.name);
 
                 fs.writeFileSync(filePath, Buffer.from(buffer));
-
-                // Extract text from document
                 const text = await parseFileText(filePath);
                 parsedFiles.push({ filename: file.name, text });
 
-                // Clean up disk immediately after reading
                 if (fs.existsSync(filePath)) {
                     fs.unlinkSync(filePath);
                 }
             }
 
-            // 2. AI DYNAMIC DOCUMENT CLASSIFICATION
-            // Classify all uploaded documents concurrently using Ollama
+            // Parallel document classification
             const classifiedFiles = await Promise.all(
                 parsedFiles.map(async (file) => {
-                    const docType = await classifyDocumentWithOllama(file.text, file.filename);
-                    return { ...file, docType };
+                    const classification = await classifyDocumentWithOllama(file.text, file.filename);
+                    return { ...file, docType: classification.type, title: classification.title };
                 })
             );
 
             const jdFiles = classifiedFiles.filter(f => f.docType === 'JOB_DESCRIPTION');
             const resumes = classifiedFiles.filter(f => f.docType === 'RESUME');
 
-            // Validate presence of Job Description
             if (jdFiles.length === 0) {
-                await say("No Job Description identified. AI classified all uploaded files as resumes. Please include a Job Description document.");
+                await say("No Job Descriptions identified among uploaded files. Please upload at least one Job Description.");
                 return;
             }
 
-            // Use primary Job Description
-            const jdFile = jdFiles[0];
-            if (jdFiles.length > 1) {
-                await say(`Multiple Job Descriptions detected. Using *${jdFile.filename}* as the primary benchmark.`);
-            }
-
-            // Validate presence of Resumes
             if (resumes.length === 0) {
-                await say(`Found Job Description (*${jdFile.filename}*), but no candidate resumes were detected among the uploaded files.`);
+                await say(`Identified ${jdFiles.length} Job Description(s), but no candidate resumes were detected.`);
                 return;
             }
 
-            await say(`Identified Job Description (*${jdFile.filename}*) and ${resumes.length} resume(s). Analyzing candidates now...`);
+            const jdTitles = jdFiles.map(j => `• *${j.title}* (\`${j.filename}\`)`).join("\n");
+            await say(`Identified *${jdFiles.length} Job Description(s)*:\n${jdTitles}\n\nEvaluating *${resumes.length} Candidate Resume(s)* across ALL Job Descriptions...`);
 
-            const jdText = jdFile.text;
-
-            // 3. SCORE RESUMES
-            const rankedCandidates = [];
+            // Evaluate candidates against all JDs
+            const candidatesData = [];
 
             for (const resume of resumes) {
-                const result = await scoreResumeWithOllama(resume.text, jdText);
+                const result = await scoreResumeWithOllama(resume.text, jdFiles);
 
-                // Prefer LLM extracted candidate name, fall back to cleaned filename
                 const candidateName = (result.name && result.name !== "N/A" && result.name.trim().length > 0)
                     ? result.name
                     : getDisplayName(resume.filename);
 
-                rankedCandidates.push({
+                candidatesData.push({
                     filename: resume.filename,
                     displayName: candidateName,
-                    score: result.score || 0,
-                    status: result.status || 'Evaluation complete.',
                     cgpa: result.cgpa || 'N/A',
                     experience: result.experience || 'N/A',
                     experience_calculation_notes: result.experience_calculation_notes || 'N/A',
                     college: result.college || 'N/A',
-                    matched: result.matched || [],
-                    missing: result.missing || []
+                    evaluations: result.evaluations || []
                 });
             }
 
-            // Sort candidates highest to lowest score
-            rankedCandidates.sort((a, b) => b.score - a.score);
+            // Save full context (JDs + Candidates) in channel cache for Q&A
+            const sessionData = {
+                jds: jdFiles.map(j => ({ filename: j.filename, title: j.title, text: j.text })),
+                candidates: candidatesData
+            };
+            channelCache.set(message.channel, sessionData);
 
-            // Store results in channel context for follow-up Q&A
-            channelCache.set(message.channel, rankedCandidates);
-
-            // Construct Slack Block UI
+            // Construct Multi-JD Output Cards
             const blocks = [
                 {
                     type: "header",
-                    text: { type: "plain_text", text: "Resume Ranking Results", emoji: false }
+                    text: { type: "plain_text", text: "Multi-Role Evaluation Matrix", emoji: false }
                 },
                 { type: "divider" }
             ];
 
-            rankedCandidates.forEach((candidate) => {
-                const matchedSkills = candidate.matched.length > 0
-                    ? candidate.matched.map(s => `• \`${s}\``).join("\n")
-                    : "• _None matched_";
+            candidatesData.forEach((candidate) => {
+                let evalSectionText = "";
 
-                const missingSkills = candidate.missing.length > 0
-                    ? candidate.missing.map(s => `• \`${s}\``).join("\n")
-                    : "• _None missing_";
+                candidate.evaluations.forEach((evalItem) => {
+                    const matchedSkills = evalItem.matched.length > 0
+                        ? evalItem.matched.map(s => `\`${s}\``).join(", ")
+                        : "_None matched_";
 
-                const cardContent =
+                    const missingSkills = evalItem.missing.length > 0
+                        ? evalItem.missing.map(s => `\`${s}\``).join(", ")
+                        : "_None missing_";
+
+                    evalSectionText +=
+                        `\n> *Role: ${evalItem.jd_title}* (\`${evalItem.jd_filename}\`)
+> • *Score:* *${evalItem.score}/100*
+> • *Status:* ${evalItem.status}
+> • *Matched:* ${matchedSkills}
+> • *Missing:* ${missingSkills}\n`;
+                });
+
+                const candidateCard =
                     `*Candidate:* *${candidate.displayName}*
-• *ATS Score:* *${candidate.score}/100*
 • *CGPA:* ${candidate.cgpa}
 • *College:* ${candidate.college}
 • *Experience:* ${candidate.experience}
 • *Exp Notes:* _${candidate.experience_calculation_notes}_
-• *Status:* ${candidate.status}
 
-*Matched Skills:*
-${matchedSkills}
+*Evaluations Across Job Descriptions:*${evalSectionText}`;
 
-*Missing Skills:*
-${missingSkills}`;
-
-                blocks.push({ type: "section", text: { type: "mrkdwn", text: cardContent } });
+                blocks.push({ type: "section", text: { type: "mrkdwn", text: candidateCard } });
                 blocks.push({ type: "divider" });
             });
 
-            await say({ text: "Resume Ranking Results", blocks: blocks });
+            await say({ text: "Multi-Role Evaluation Matrix", blocks: blocks });
 
         } catch (error) {
-            console.error('Error during batch file processing:', error);
-            await say('Error processing the uploaded files. Please check server logs.');
+            console.error('Error processing files:', error);
+            await say('Error processing uploaded files. Check server console for details.');
         }
         return;
     }
 
-    // 2. HANDLE TEXT QUESTIONS (Q&A Phase)
+    // 2. RIGOROUS Q&A PHASE
     if (message.text && !message.files) {
         const queryText = message.text;
-        const cachedCandidates = channelCache.get(message.channel);
+        const sessionData = channelCache.get(message.channel);
 
-        if (cachedCandidates && cachedCandidates.length > 0) {
-            await say("_Analyzing candidates..._");
+        if (sessionData && sessionData.candidates.length > 0) {
+            await say("_Analyzing multi-role candidate dataset..._");
 
-            const answer = await answerQuestionWithOllama(queryText, cachedCandidates);
+            const answer = await answerQuestionWithOllama(queryText, sessionData);
             await say(answer);
         } else {
-            await say("Please upload a Job Description and Resumes first before asking questions.");
+            await say("Please upload Job Descriptions and Resumes first before asking testing questions.");
         }
     }
 });
 
-// Start Slack Socket Server
 (async () => {
     await app.start();
-    console.log('Slack Bot with Ollama ATS Scorer & Q&A is running!');
+    console.log('Multi-JD ATS Evaluation Server is running!');
 })();
