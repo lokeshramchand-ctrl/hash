@@ -4,7 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const { extractPdfText } = require('./parser/pdfParser');
 const { extractDocxText } = require('./parser/docxParser');
-// IMPORT THE NEW FUNCTION HERE
 const { scoreResumeWithOllama, answerQuestionWithOllama } = require('./scoring/ollamaScorer');
 
 const app = new App({
@@ -35,7 +34,6 @@ async function parseFileText(filePath) {
 
 app.message(async ({ message, say }) => {
 
-    // 1. HANDLE FILE UPLOADS (Scoring Phase)
     if (message.files && message.files.length > 0) {
         await say(`Received ${message.files.length} file(s). Downloading and analyzing resumes with AI...`);
 
